@@ -135,7 +135,7 @@ create_main_script() {
 #!/bin/sh
 
 # ============================================
-# VLESS FILTER - Только sing-box проверка
+# VLESS FILTER - Только sing-box проверка (с очисткой ссылок)
 # ============================================
 
 CONFIG_FILE="/etc/config/vlessfilter"
@@ -175,6 +175,18 @@ warning() {
 
 info() {
     echo -e "${BLUE}[INFO]${NC} $1" | tee -a "$LOG_FILE"
+}
+
+# Функция очистки ссылки от пробелов и мусора
+clean_link() {
+    local link="$1"
+    # Удаляем все пробелы в начале и конце
+    link=$(echo "$link" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    # Удаляем все пробелы внутри ссылки (они там не нужны)
+    link=$(echo "$link" | tr -d ' ')
+    # Удаляем возврат каретки и другие управляющие символы
+    link=$(echo "$link" | tr -d '\r\n\t')
+    echo "$link"
 }
 
 # Проверка флага остановки
@@ -351,7 +363,7 @@ fi
 
 # Проверка блокировки
 if [ -f "$LOCK_FILE" ]; then
-    local pid=$(cat "$LOCK_FILE")
+    pid=$(cat "$LOCK_FILE")
     if kill -0 "$pid" 2>/dev/null; then
         error "Скрипт уже запущен (PID: $pid)"
         error "Используйте кнопку STOP в интерфейсе или команду: $0 stop"
@@ -372,6 +384,7 @@ echo ""
 
 log "Запуск проверки ссылок..."
 info "Будет отобрано по $TAKE_COUNT рабочих ссылок ИЗ КАЖДОГО ИСТОЧНИКА"
+info "Ссылки автоматически очищаются от пробелов"
 echo ""
 
 # Вместо массивов используем временные файлы для хранения информации об источниках
@@ -402,8 +415,12 @@ while [ $i -le 5 ]; do
         SOURCE_LINKS="$TEMP_DIR/source_${source_index}_links.txt"
         
         if curl -s -L --connect-timeout 10 "$SOURCE_URL" -o "$SOURCE_FILE" 2>/dev/null; then
-            TOTAL=$(grep -c "vless://" "$SOURCE_FILE")
-            grep "vless://" "$SOURCE_FILE" > "$SOURCE_LINKS"
+            # Находим все vless ссылки и очищаем их от пробелов
+            grep "vless://" "$SOURCE_FILE" | while read -r line; do
+                clean_link "$line" >> "$SOURCE_LINKS"
+            done
+            
+            TOTAL=$(wc -l < "$SOURCE_LINKS")
             
             echo -e "${GREEN} ✓${NC} (найдено: $TOTAL)"
             
@@ -460,7 +477,7 @@ while [ $idx -lt $source_index ]; do
     SOURCE_COUNT=0
     SOURCE_WORKING_COUNT=0
     
-    # Читаем все ссылки источника
+    # Читаем все ссылки источника (уже очищенные от пробелов)
     while read -r link; do
         check_stop
         [ -z "$link" ] && continue
@@ -644,11 +661,13 @@ if [ -f /etc/init.d/podkop ] && [ -s "$WORKING_LINKS_FILE" ]; then
     # Очищаем старые ссылки
     uci delete podkop.main.urltest_proxy_links 2>/dev/null
     
-    # Добавляем новые
+    # Добавляем новые (уже очищенные)
     ADDED=0
     while read -r link; do
         if [ -n "$link" ]; then
-            escaped=$(echo "$link" | sed "s/'/'\\\\''/g")
+            # Еще раз очищаем на всякий случай перед добавлением в UCI
+            cleaned_link=$(clean_link "$link")
+            escaped=$(echo "$cleaned_link" | sed "s/'/'\\\\''/g")
             uci add_list podkop.main.urltest_proxy_links="$escaped"
             ADDED=$((ADDED + 1))
         fi
